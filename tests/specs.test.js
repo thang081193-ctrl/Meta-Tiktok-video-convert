@@ -23,11 +23,22 @@ describe('platform specs', () => {
     }
   });
 
+  it('marks built-in ad profiles as strict no-crop exports', () => {
+    const reels = TARGET_PROFILES.find(profile => profile.id === 'meta_reels_9x16');
+    expect(reels.complianceMode).toBe('ads-safe-strict');
+    expect(reels.allowUseOriginal).toBe(false);
+    expect(reels.requireAudio).toBe(true);
+    expect(reels.container).toEqual(['mp4']);
+    expect(reels.layoutBounds.maxScale).toBe(1);
+    expect(reels.maxDurationSec).toBe(90);
+  });
+
   it('exposes defaults used by the frontend', () => {
     const specs = getSpecsPayload();
     expect(specs.defaults.smartSkip).toBe(true);
     expect(specs.defaults.forceConvert).toBe(false);
     expect(specs.profiles).toHaveLength(4);
+    expect(specs.ui.profileFields).toContain('layoutBounds');
   });
 
   it('includes preview metadata needed by the UI legend', () => {

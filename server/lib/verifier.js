@@ -1,5 +1,5 @@
 import { analyzeVideo } from './ffmpeg.js';
-import { aspectRatioValue, aspectWithinTolerance, QA_STATUS } from './specs.js';
+import { aspectRatioValue, aspectWithinTolerance, isStrictComplianceMode, QA_STATUS } from './specs.js';
 
 export async function verifyOutput(filePath, target, { decision = 'converted', command = null, layout = null } = {}) {
   let analysis;
@@ -20,6 +20,7 @@ export async function verifyOutput(filePath, target, { decision = 'converted', c
   const video = analysis.video || {};
   const audio = analysis.audio;
   const expectedAspect = aspectRatioValue(target.aspectRatio);
+  const strictMode = isStrictComplianceMode(target);
 
   if (decision === 'converted') {
     if (Math.abs((video.displayWidth || 0) - target.width) > 2) {
@@ -47,6 +48,7 @@ export async function verifyOutput(filePath, target, { decision = 'converted', c
     issues.push(`Video codec ${video.codec}; can ${target.videoCodec}.`);
   }
   if (video.pixelFormat !== 'yuv420p') {
+    if (strictMode) issues.push(`Pixel format ${video.pixelFormat || 'unknown'}; strict target requires yuv420p.`);
     warnings.push(`Pixel format ${video.pixelFormat || 'unknown'}; preferred yuv420p.`);
   }
   if ((video.fps || 0) > target.fps + 0.5) {
@@ -65,9 +67,14 @@ export async function verifyOutput(filePath, target, { decision = 'converted', c
     warnings.push(`Con rotation metadata ${video.rotation} do.`);
   }
   if (!analysis.faststart && analysis.container === 'mp4') {
+    if (strictMode) issues.push('Strict target requires MP4 faststart/moov atom at the front of the file.');
     warnings.push('MP4 chua faststart.');
   }
+  if (!audio && target.requireAudio) {
+    issues.push('Strict target requires an AAC audio stream.');
+  }
   if (audio && audio.codec !== target.audioCodec) {
+    if (strictMode) issues.push(`Audio codec ${audio.codec}; strict target requires ${target.audioCodec}.`);
     warnings.push(`Audio codec ${audio.codec}; preferred ${target.audioCodec}.`);
   }
   if (audio && ![44100, 48000].includes(audio.sampleRate)) {
@@ -82,6 +89,12 @@ export async function verifyOutput(filePath, target, { decision = 'converted', c
     const rect = layout.foregroundRect;
     if (rect.x < 0 || rect.y < 0 || rect.x + rect.width > target.width || rect.y + rect.height > target.height) {
       issues.push('Foreground rect falls outside the output canvas.');
+    }
+    if (strictMode && layout.safeRect) {
+      const safeRect = layout.safeRect;
+      if (rect.x < safeRect.x || rect.y < safeRect.y || rect.x + rect.width > safeRect.x + safeRect.width || rect.y + rect.height > safeRect.y + safeRect.height) {
+        issues.push('Foreground rect falls outside the strict safe rect.');
+      }
     }
   }
 

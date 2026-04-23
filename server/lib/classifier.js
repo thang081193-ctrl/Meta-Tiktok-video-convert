@@ -1,5 +1,5 @@
 import { REVIEW_STATE, calculateLayout } from '../../public/layout-core.js';
-import { aspectRatioValue, aspectWithinTolerance, CLASSIFICATION } from './specs.js';
+import { aspectRatioValue, aspectWithinTolerance, CLASSIFICATION, isStrictComplianceMode } from './specs.js';
 
 export function classifyAssetForTargets(asset, targets = []) {
   if (asset.error || !asset.analysis) {
@@ -21,6 +21,7 @@ export function classifyAssetForTargets(asset, targets = []) {
 }
 
 export function classifyForTarget(info, target, layoutOverride = null) {
+  const strictMode = isStrictComplianceMode(target);
   const failures = [];
   const warnings = [];
   const exactMisses = [];
@@ -28,6 +29,40 @@ export function classifyForTarget(info, target, layoutOverride = null) {
   const audio = info.audio;
   const expectedAspect = aspectRatioValue(target.aspectRatio);
   const actualAspect = video.aspectRatio || 0;
+
+  if (strictMode && (info.durationSec || 0) > target.maxDurationSec) {
+    return {
+      targetId: target.id,
+      status: CLASSIFICATION.UNSUPPORTED,
+      label: 'Blocked',
+      decision: 'blocked',
+      reasons: [`Duration ${formatSeconds(info.durationSec)} vuot strict target limit ${formatSeconds(target.maxDurationSec)}. Trim outside app before export.`],
+      warnings: [],
+      summary: 'Strict ads-safe target cannot be exported until the source is trimmed.',
+      reviewState: REVIEW_STATE.BLOCKED,
+      reviewReasons: ['Duration exceeds strict target limit.'],
+      autoLayout: calculateLayout({
+        sourceWidth: video.displayWidth || 0,
+        sourceHeight: video.displayHeight || 0,
+        target,
+        override: layoutOverride || null,
+      }),
+      complianceMode: target.complianceMode,
+      allowUseOriginal: target.allowUseOriginal,
+      requireAudio: target.requireAudio,
+      measured: {
+        width: video.displayWidth,
+        height: video.displayHeight,
+        aspectRatio: actualAspect,
+        fps: video.fps,
+        sizeBytes: info.sizeBytes,
+        durationSec: info.durationSec,
+        container: info.container,
+        videoCodec: video.codec,
+        audioCodec: audio?.codec || null,
+      },
+    };
+  }
 
   if (!target.container.includes(info.container)) {
     failures.push(`Container ${info.container || 'unknown'} khong nam trong nhom ${target.container.join('/')}.`);
@@ -86,7 +121,9 @@ export function classifyForTarget(info, target, layoutOverride = null) {
     if (![1, 2].includes(audio.channels)) warnings.push(`Audio ${audio.channels || 0} channels; nen dung stereo.`);
     if (![44100, 48000].includes(audio.sampleRate)) warnings.push(`Audio sample rate ${audio.sampleRate || 0} Hz; nen dung 44.1 kHz hoac 48 kHz.`);
   } else {
-    warnings.push('Video khong co audio; van co the dung neu creative chap nhan silent.');
+    warnings.push(strictMode
+      ? 'Strict ads-safe target requires audio at export time. Keep source audio or add music before exporting.'
+      : 'Video khong co audio; van co the dung neu creative chap nhan silent.');
   }
 
   if (Math.abs((video.displayWidth || 0) - target.width) > 2) exactMisses.push(`Width hien tai ${video.displayWidth}, preferred ${target.width}.`);
@@ -128,10 +165,13 @@ export function classifyForTarget(info, target, layoutOverride = null) {
     decision,
     reasons: failures,
     warnings: [...warnings, ...(status === CLASSIFICATION.READY_ACCEPTED ? exactMisses : [])],
-    summary: summarize(status),
+    summary: summarize(status, { strictMode }),
     reviewState: failures.length ? autoLayout.reviewState : (decision === 'skip' ? REVIEW_STATE.SAFE_AUTO : autoLayout.reviewState),
     reviewReasons: failures.length ? autoLayout.reviewReasons : (decision === 'skip' ? [] : autoLayout.reviewReasons),
     autoLayout,
+    complianceMode: target.complianceMode,
+    allowUseOriginal: target.allowUseOriginal,
+    requireAudio: target.requireAudio,
     measured: {
       width: video.displayWidth,
       height: video.displayHeight,
@@ -149,18 +189,23 @@ export function classifyForTarget(info, target, layoutOverride = null) {
 export function shouldConvert(classification, { smartSkip = true, forceConvert = false, useOriginalTargets = [] } = {}) {
   if (!classification || classification.status === CLASSIFICATION.UNSUPPORTED) return false;
   if (forceConvert) return true;
-  if (useOriginalTargets.includes(classification.targetId)) return false;
+  if (classification.complianceMode === 'ads-safe-strict') return true;
+  if (classification.allowUseOriginal !== false && useOriginalTargets.includes(classification.targetId)) return false;
   if (!smartSkip) return true;
   if ([CLASSIFICATION.READY_EXACT, CLASSIFICATION.READY_ACCEPTED].includes(classification.status)) return false;
   return true;
 }
 
-function summarize(status) {
+function summarize(status, { strictMode = false } = {}) {
   switch (status) {
     case CLASSIFICATION.READY_EXACT:
-      return 'Dung chuan target, khong can convert.';
+      return strictMode
+        ? 'Source matches the target, but strict ads-safe mode will still normalize to a fresh MP4 export.'
+        : 'Dung chuan target, khong can convert.';
     case CLASSIFICATION.READY_ACCEPTED:
-      return 'Platform co the dung file goc, khong can convert mac dinh.';
+      return strictMode
+        ? 'Source is accepted, but strict ads-safe mode will still normalize to a fresh MP4 export.'
+        : 'Platform co the dung file goc, khong can convert mac dinh.';
     case CLASSIFICATION.CONVERT_RECOMMENDED:
       return 'Co the upload nhung nen convert de giam rui ro quality/delivery.';
     case CLASSIFICATION.CONVERT_REQUIRED:

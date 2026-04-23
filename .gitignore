@@ -1,5 +1,6 @@
 node_modules/
 workspace/
+tests/fixtures/
 coverage/
 .DS_Store
 *.log

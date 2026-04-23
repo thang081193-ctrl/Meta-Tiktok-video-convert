@@ -1,3 +1,13 @@
+const TERMINAL_JOB_STATUSES = new Set(['complete', 'failed', 'cancelled']);
+
+export function isTerminalJobStatus(status) {
+  return TERMINAL_JOB_STATUSES.has(status);
+}
+
+export function shouldPersistLastJob(job) {
+  return !!job?.id && !isTerminalJobStatus(job.status);
+}
+
 export function getSelectionState(assetIds, selectedAssetIds) {
   const uploadedCount = assetIds.length;
   const selectedCount = assetIds.filter(id => selectedAssetIds.has(id)).length;

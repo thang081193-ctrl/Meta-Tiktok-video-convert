@@ -6,8 +6,10 @@ import {
 import {
   buildCreateJobPayload,
   getSelectionState,
+  isTerminalJobStatus,
   layoutOverrideKey,
   mergeSelectedAssetIds,
+  shouldPersistLastJob,
   toggleAllAssetIds,
 } from './ui-model.js';
 
@@ -52,9 +54,13 @@ async function init() {
 
   const lastJobId = localStorage.getItem('lastJobId');
   if (lastJobId) {
-    state.job = await api(`/api/jobs/${lastJobId}`).catch(() => null);
-    if (state.job && !['complete', 'failed', 'cancelled'].includes(state.job.status)) {
+    const restoredJob = await api(`/api/jobs/${lastJobId}`).catch(() => null);
+    if (shouldPersistLastJob(restoredJob)) {
+      state.job = restoredJob;
       startPolling();
+    } else {
+      state.job = null;
+      clearStoredJob();
     }
   }
 
@@ -252,6 +258,7 @@ function renderPreviewInspector(asset, target, classification, layoutContext) {
   }
 
   const { layout } = layoutContext;
+  const strictMode = target.complianceMode === 'ads-safe-strict';
   const dynamicDetails = [
     ...target.details,
     {
@@ -286,9 +293,10 @@ function renderPreviewInspector(asset, target, classification, layoutContext) {
       <div class="editor-grid">
         <div class="editor-card">
           <div class="editor-card-header">
-            <strong>Layout editor</strong>
+            <strong>${strictMode ? 'No-Crop Ads Safe Mode' : 'Layout editor'}</strong>
             <button class="btn small-btn" data-layout-reset>Auto-safe reset</button>
           </div>
+          ${strictMode ? '<p class="small muted">Full frame stays inside the safe zone. Built-in ad profiles always render a fresh MP4.</p>' : ''}
           <div class="field">
             <label for="layout-scale">Content size</label>
             <input id="layout-scale" type="range" min="0.70" max="${Math.max(1, layout.maxScale).toFixed(2)}" step="0.05" value="${layout.layout.scale.toFixed(2)}">
@@ -412,8 +420,8 @@ function renderSettings() {
 function renderTargetRow(asset, target) {
   const cls = asset.classifications?.[target.id];
   const key = `${asset.id}:${target.id}`;
-  const canUseOriginal = cls && !['CONVERT_REQUIRED', 'UNSUPPORTED'].includes(cls.status);
-  const checked = state.useOriginalKeys.has(key) || (state.settings.smartSkip && ['READY_EXACT', 'READY_ACCEPTED'].includes(cls?.status));
+  const canUseOriginal = target.allowUseOriginal !== false && cls && !['CONVERT_REQUIRED', 'UNSUPPORTED'].includes(cls.status);
+  const checked = canUseOriginal && (state.useOriginalKeys.has(key) || (state.settings.smartSkip && ['READY_EXACT', 'READY_ACCEPTED'].includes(cls?.status)));
   const notePool = [...(cls?.reasons || []), ...(cls?.warnings || []), ...(cls?.reviewReasons || [])];
 
   return `
@@ -432,7 +440,7 @@ function renderTargetRow(asset, target) {
       </div>
       <div class="target-note">${esc(notePool.join(' | ') || cls?.summary || 'Chưa phân tích.')}</div>
       <div class="target-actions">
-        <label class="use-original">
+        <label class="use-original ${target.allowUseOriginal === false ? 'hidden' : ''}">
           <input type="checkbox" data-use-original="${esc(key)}" ${checked ? 'checked' : ''} ${canUseOriginal ? '' : 'disabled'}>
           Dùng file gốc cho target này
         </label>
@@ -451,7 +459,7 @@ function renderJobPanel() {
     return;
   }
 
-  const done = ['complete', 'failed', 'cancelled'].includes(state.job.status);
+  const done = isTerminalJobStatus(state.job.status);
   el.innerHTML = `
     <div class="row-title">
       <strong>Job ${esc(state.job.id.slice(0, 8))}</strong>
@@ -462,6 +470,7 @@ function renderJobPanel() {
       ${done ? `<a class="btn primary" href="${state.job.zipUrl}">${icon('download')}ZIP</a>` : `<button class="btn danger" id="cancel-btn">${icon('stop')}Cancel</button>`}
       ${done ? `<a class="btn" href="${state.job.reportHtmlUrl}" target="_blank" rel="noopener">${icon('report')}QA HTML</a>` : ''}
       ${done ? `<a class="btn" href="${state.job.reportUrl}" target="_blank" rel="noopener">${icon('file')}JSON</a>` : ''}
+      ${done ? `<button class="btn danger" id="clear-completed-btn">${icon('trash')}Clear completed jobs</button>` : ''}
     </div>
     <div class="output-list">
       ${state.job.outputs.map(renderOutputRow).join('')}
@@ -470,6 +479,8 @@ function renderJobPanel() {
 
   const cancel = document.getElementById('cancel-btn');
   if (cancel) cancel.onclick = cancelJob;
+  const clearCompleted = document.getElementById('clear-completed-btn');
+  if (clearCompleted) clearCompleted.onclick = clearCompletedJobs;
 }
 
 function renderOutputRow(output) {
@@ -945,7 +956,7 @@ async function createJob() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    localStorage.setItem('lastJobId', state.job.id);
+    syncStoredJob(state.job);
     render();
     startPolling();
   } catch (err) {
@@ -963,6 +974,20 @@ async function cancelJob() {
   }
 }
 
+async function clearCompletedJobs() {
+  if (!state.job || !isTerminalJobStatus(state.job.status)) return;
+  if (!confirm('Clear all completed, failed, and cancelled jobs?')) return;
+
+  try {
+    await api('/api/jobs/completed', { method: 'DELETE' });
+    state.job = null;
+    clearStoredJob();
+    renderJobPanel();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
 function startPolling() {
   if (state.pollTimer) clearInterval(state.pollTimer);
   state.pollTimer = setInterval(pollJob, 1500);
@@ -972,8 +997,9 @@ async function pollJob() {
   if (!state.job) return;
   try {
     state.job = await api(`/api/jobs/${state.job.id}`);
+    syncStoredJob(state.job);
     renderJobPanel();
-    if (['complete', 'failed', 'cancelled'].includes(state.job.status)) {
+    if (isTerminalJobStatus(state.job.status)) {
       clearInterval(state.pollTimer);
       state.pollTimer = null;
       renderJobPanel();
@@ -981,6 +1007,18 @@ async function pollJob() {
   } catch (err) {
     console.warn(err);
   }
+}
+
+function syncStoredJob(job) {
+  if (shouldPersistLastJob(job)) {
+    localStorage.setItem('lastJobId', job.id);
+    return;
+  }
+  clearStoredJob();
+}
+
+function clearStoredJob() {
+  localStorage.removeItem('lastJobId');
 }
 
 function getSelectedAsset() {

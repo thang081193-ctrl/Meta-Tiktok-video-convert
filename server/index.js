@@ -165,6 +165,15 @@ app.get('/api/jobs/:jobId', (req, res) => {
   res.json(job);
 });
 
+app.delete('/api/jobs/completed', async (_req, res, next) => {
+  try {
+    const deletedJobIds = await service.clearTerminalJobs();
+    res.json({ ok: true, deletedJobIds, deletedCount: deletedJobIds.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.post('/api/jobs/:jobId/cancel', async (req, res, next) => {
   try {
     const ok = await service.cancelJob(req.params.jobId);

@@ -44,11 +44,11 @@ function analysis(overrides = {}) {
 }
 
 describe('readiness classifier', () => {
-  it('marks an exact TikTok 9:16 source as READY_EXACT and skips by default', () => {
+  it('keeps strict built-ins as READY_EXACT but still forces conversion', () => {
     const result = classifyForTarget(analysis(), TARGETS_BY_ID.tiktok_vertical_9x16);
     expect(result.status).toBe(CLASSIFICATION.READY_EXACT);
     expect(result.reviewState).toBe(REVIEW_STATE.SAFE_AUTO);
-    expect(shouldConvert(result, { smartSkip: true, forceConvert: false })).toBe(false);
+    expect(shouldConvert(result, { smartSkip: true, forceConvert: false })).toBe(true);
   });
 
   it('marks a valid but non-preferred 9:16 source as READY_ACCEPTED', () => {
@@ -83,6 +83,32 @@ describe('readiness classifier', () => {
     }), TARGETS_BY_ID.tiktok_vertical_9x16);
     expect(result.status).toBe(CLASSIFICATION.CONVERT_REQUIRED);
     expect(result.reasons.join(' ')).toContain('khong khop');
+  });
+
+  it('blocks strict Reels targets that exceed the 90 second limit', () => {
+    const result = classifyForTarget(analysis({ durationSec: 120 }), TARGETS_BY_ID.meta_reels_9x16);
+    expect(result.status).toBe(CLASSIFICATION.UNSUPPORTED);
+    expect(result.reviewState).toBe(REVIEW_STATE.BLOCKED);
+    expect(result.reasons.join(' ')).toContain('Trim outside app');
+  });
+
+  it('keeps custom profiles on smart-skip when they are exact-ready', () => {
+    const customTarget = {
+      ...TARGETS_BY_ID.tiktok_vertical_9x16,
+      id: 'custom_vertical_9x16',
+      complianceMode: 'standard',
+      allowUseOriginal: true,
+      requireAudio: false,
+      container: ['mp4', 'mov'],
+      layoutBounds: {
+        minScale: 0.7,
+        maxScale: 2.5,
+        step: 0.05,
+      },
+    };
+    const result = classifyForTarget(analysis(), customTarget);
+    expect(result.status).toBe(CLASSIFICATION.READY_EXACT);
+    expect(shouldConvert(result, { smartSkip: true, forceConvert: false })).toBe(false);
   });
 
   it('force convert overrides ready skip', () => {

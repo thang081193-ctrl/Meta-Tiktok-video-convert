@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCreateJobPayload,
   getSelectionState,
+  isTerminalJobStatus,
   mergeSelectedAssetIds,
+  shouldPersistLastJob,
   toggleAllAssetIds,
 } from '../public/ui-model.js';
 
@@ -24,6 +26,20 @@ describe('ui selection model', () => {
     const selected = toggleAllAssetIds(['a1', 'a2'], true);
     expect(Array.from(selected).sort()).toEqual(['a1', 'a2']);
     expect(toggleAllAssetIds(['a1', 'a2'], false).size).toBe(0);
+  });
+
+  it('treats complete, failed, and cancelled jobs as terminal', () => {
+    expect(isTerminalJobStatus('complete')).toBe(true);
+    expect(isTerminalJobStatus('failed')).toBe(true);
+    expect(isTerminalJobStatus('cancelled')).toBe(true);
+    expect(isTerminalJobStatus('running')).toBe(false);
+  });
+
+  it('only persists active jobs as last job', () => {
+    expect(shouldPersistLastJob({ id: 'j1', status: 'queued' })).toBe(true);
+    expect(shouldPersistLastJob({ id: 'j1', status: 'running' })).toBe(true);
+    expect(shouldPersistLastJob({ id: 'j1', status: 'complete' })).toBe(false);
+    expect(shouldPersistLastJob(null)).toBe(false);
   });
 
   it('builds job payload from selected asset ids only', () => {

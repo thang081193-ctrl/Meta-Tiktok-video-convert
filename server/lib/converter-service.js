@@ -20,6 +20,7 @@ import {
   getDefaultTargetIds,
   getSpecsPayload,
   getTargetProfiles,
+  isStrictComplianceMode,
   QA_STATUS,
 } from './specs.js';
 import {
@@ -29,6 +30,7 @@ import {
   ensureDir,
   ensureDirs,
   formatBytes,
+  removeDirIfExists,
   sanitizeFilename,
   safeStem,
   sweepOldFiles,
@@ -37,6 +39,8 @@ import {
 import { ProfileStore } from './profile-store.js';
 import { verifyOutput } from './verifier.js';
 import { writeReports } from './report.js';
+
+const TERMINAL_JOB_STATUSES = new Set(['complete', 'failed', 'cancelled']);
 
 export class ConverterService {
   constructor() {
@@ -376,18 +380,34 @@ export class ConverterService {
     const jobDir = path.join(paths.jobs, id);
     const outputDir = path.join(paths.outputs, id);
     const reportDir = path.join(paths.reports, id);
-    const useOriginalSet = new Set(Array.isArray(useOriginalKeys) ? useOriginalKeys : []);
+    const requestedUseOriginalSet = new Set(Array.isArray(useOriginalKeys) ? useOriginalKeys : []);
+    const targetsById = new Map(targets.map(target => [target.id, target]));
+    const useOriginalSet = new Set(
+      Array.from(requestedUseOriginalSet).filter(key => {
+        const [, targetId] = String(key || '').split(':');
+        return targetsById.get(targetId)?.allowUseOriginal !== false;
+      }),
+    );
     const layoutMap = new Map((Array.isArray(layoutOverrides) ? layoutOverrides : []).map(item => [`${item.assetId}:${item.targetId}`, item]));
+    const hasMusic = !!this.getMusic(musicAssetId);
 
     const outputs = [];
     for (const asset of assets) {
       for (const target of targets) {
         const classification = asset.classifications?.[target.id];
         const key = `${asset.id}:${target.id}`;
-        const manualOriginal = useOriginalSet.has(key)
+        const blockReason = resolveOutputBlockReason({
+          asset,
+          target,
+          classification,
+          audioMode,
+          hasMusic,
+        });
+        const manualOriginal = target.allowUseOriginal !== false
+          && useOriginalSet.has(key)
           && classification?.status !== CLASSIFICATION.CONVERT_REQUIRED
           && classification?.status !== CLASSIFICATION.UNSUPPORTED;
-        const blocked = !classification || classification.status === CLASSIFICATION.UNSUPPORTED || asset.error;
+        const blocked = !!blockReason;
         const convert = blocked ? false : (!manualOriginal && shouldConvert(classification, { smartSkip, forceConvert }));
         const decision = blocked ? 'blocked' : (convert ? 'converted' : 'skipped');
         const ext = decision === 'skipped' && asset.analysis?.container === 'mov' ? 'mov' : 'mp4';
@@ -404,12 +424,12 @@ export class ConverterService {
           decision,
           state: blocked ? 'blocked' : 'queued',
           progress: 0,
-          progressMsg: '',
+          progressMsg: blocked ? 'Blocked' : '',
           outputName,
           outputPath: path.join(outputDir, outputName),
           thumbnailPath: path.join(outputDir, `${path.parse(outputName).name}__thumb.jpg`),
           qa: null,
-          error: blocked ? (asset.error || 'Target khong ho tro.') : null,
+          error: blocked ? blockReason : null,
           command: null,
           layoutOverride: layoutMap.get(key) || null,
           layoutResult: classification?.autoLayout || null,
@@ -421,7 +441,7 @@ export class ConverterService {
       id,
       status: outputs.every(output => output.state === 'blocked') ? 'failed' : 'queued',
       createdAt: new Date().toISOString(),
-      completedAt: null,
+      completedAt: outputs.every(output => output.state === 'blocked') ? new Date().toISOString() : null,
       jobDir,
       outputDir,
       reportDir,
@@ -438,7 +458,9 @@ export class ConverterService {
       },
       assets,
       outputs,
-      error: null,
+      error: outputs.every(output => output.state === 'blocked')
+        ? 'All selected outputs were blocked before encode.'
+        : null,
       currentChildProcess: null,
       reportJsonPath: null,
       reportHtmlPath: null,
@@ -446,16 +468,19 @@ export class ConverterService {
 
     this.jobs.set(id, job);
     ensureDirs([jobDir, outputDir, reportDir])
-      .then(() => this.persistJob(job))
-      .then(() => {
-        if (job.status !== 'failed') {
-          this.processJob(job).catch(err => {
-            job.status = 'failed';
-            job.error = err.message;
-            job.completedAt = new Date().toISOString();
-            this.persistJob(job).catch(() => {});
-          });
+      .then(async () => {
+        if (job.status === 'failed') {
+          await writeReports(job, job.reportDir).catch(() => {});
+          await this.persistJob(job);
+          return;
         }
+        await this.persistJob(job);
+        this.processJob(job).catch(err => {
+          job.status = 'failed';
+          job.error = err.message;
+          job.completedAt = new Date().toISOString();
+          this.persistJob(job).catch(() => {});
+        });
       })
       .catch(err => {
         job.status = 'failed';
@@ -472,7 +497,7 @@ export class ConverterService {
 
   async cancelJob(id) {
     const job = this.jobs.get(id);
-    if (!job || ['complete', 'failed', 'cancelled'].includes(job.status)) return false;
+    if (!job || isTerminalJobStatus(job.status)) return false;
     job.status = 'cancelled';
     job.completedAt = new Date().toISOString();
     if (job.currentChildProcess?.pid) {
@@ -487,6 +512,18 @@ export class ConverterService {
     await writeReports(job, job.reportDir).catch(() => {});
     await this.persistJob(job);
     return true;
+  }
+
+  async clearTerminalJobs() {
+    const deletedJobIds = [];
+
+    for (const job of Array.from(this.jobs.values())) {
+      if (!isTerminalJobStatus(job.status)) continue;
+      await this.deleteTerminalJob(job);
+      deletedJobIds.push(job.id);
+    }
+
+    return deletedJobIds;
   }
 
   async processJob(job) {
@@ -785,6 +822,54 @@ export class ConverterService {
     for (const job of this.jobs.values()) {
       if (job.currentChildProcess?.pid) await killProcessTree(job.currentChildProcess.pid);
     }
+  }
+
+  async deleteTerminalJob(job) {
+    const jobDir = assertInside(paths.jobs, job.jobDir || path.join(paths.jobs, job.id));
+    const outputDir = assertInside(paths.outputs, job.outputDir || path.join(paths.outputs, job.id));
+    const reportDir = assertInside(paths.reports, job.reportDir || path.join(paths.reports, job.id));
+
+    await Promise.all([
+      removeDirIfExists(jobDir),
+      removeDirIfExists(outputDir),
+      removeDirIfExists(reportDir),
+    ]);
+    this.jobs.delete(job.id);
+  }
+}
+
+function isTerminalJobStatus(status) {
+  return TERMINAL_JOB_STATUSES.has(status);
+}
+
+function resolveOutputBlockReason({ asset, target, classification, audioMode, hasMusic }) {
+  if (asset?.error) return asset.error;
+  if (!classification) return 'Target could not be classified.';
+  if (classification.status === CLASSIFICATION.UNSUPPORTED) {
+    return classification.reasons?.[0] || classification.summary || 'Target cannot be exported.';
+  }
+  if (target?.requireAudio && !willOutputHaveAudio(asset, audioMode, hasMusic)) {
+    if (audioMode === 'mute') {
+      return 'Strict ads-safe target requires an audio stream. Mute mode is not allowed.';
+    }
+    return 'Strict ads-safe target requires audio. Keep source audio or add music before exporting.';
+  }
+  if (isStrictComplianceMode(target) && (asset?.analysis?.durationSec || 0) > target.maxDurationSec) {
+    return `Duration ${Math.round(asset.analysis.durationSec)}s exceeds strict target limit ${target.maxDurationSec}s. Trim outside app before exporting.`;
+  }
+  return '';
+}
+
+function willOutputHaveAudio(asset, audioMode, hasMusic) {
+  switch (audioMode) {
+    case 'mute':
+      return false;
+    case 'replace':
+      return hasMusic;
+    case 'mix':
+      return hasMusic || !!asset?.analysis?.hasAudio;
+    default:
+      return !!asset?.analysis?.hasAudio;
   }
 }
 

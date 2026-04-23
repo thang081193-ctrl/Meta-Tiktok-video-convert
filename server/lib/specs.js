@@ -21,6 +21,11 @@ export const QA_STATUS = Object.freeze({
   FAIL: 'FAIL',
 });
 
+export const COMPLIANCE_MODE = Object.freeze({
+  STANDARD: 'standard',
+  ADS_SAFE_STRICT: 'ads-safe-strict',
+});
+
 export const SPEC_VERSION = '2026-04-local-v2';
 
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -37,6 +42,9 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
     label: 'TikTok Vertical 9:16',
     platform: 'TikTok',
     placement: 'Auction In-Feed / Vertical',
+    complianceMode: COMPLIANCE_MODE.ADS_SAFE_STRICT,
+    allowUseOriginal: false,
+    requireAudio: true,
     width: 1080,
     height: 1920,
     aspectRatio: '9:16',
@@ -58,7 +66,7 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
     maxDurationSec: 10 * 60,
     minBitrateBps: 516_000,
     reliabilityWarnBytes: 450 * 1024 * 1024,
-    container: ['mp4', 'mov'],
+    container: ['mp4'],
     videoCodec: 'h264',
     audioCodec: 'aac',
     preferredVideoBitrate: '10M',
@@ -70,6 +78,11 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
       bottomPercent: 0.18,
       leftPercent: 0.06,
       rightPercent: 0.06,
+    },
+    layoutBounds: {
+      minScale: 0.7,
+      maxScale: 1,
+      step: 0.05,
     },
     layoutDefaults: {
       scale: 1,
@@ -84,6 +97,9 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
     label: 'Meta Reels/Stories 9:16',
     platform: 'Meta',
     placement: 'Instagram/Facebook Reels and Stories',
+    complianceMode: COMPLIANCE_MODE.ADS_SAFE_STRICT,
+    allowUseOriginal: false,
+    requireAudio: true,
     width: 1080,
     height: 1920,
     aspectRatio: '9:16',
@@ -102,10 +118,10 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
     minWidth: 720,
     minHeight: 1280,
     maxBytes: 4 * 1024 * 1024 * 1024,
-    maxDurationSec: 240 * 60,
+    maxDurationSec: 90,
     minBitrateBps: 1_500_000,
     reliabilityWarnBytes: 1 * 1024 * 1024 * 1024,
-    container: ['mp4', 'mov'],
+    container: ['mp4'],
     videoCodec: 'h264',
     audioCodec: 'aac',
     preferredVideoBitrate: '10M',
@@ -117,6 +133,11 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
       bottomPercent: 0.22,
       leftPercent: 0.06,
       rightPercent: 0.06,
+    },
+    layoutBounds: {
+      minScale: 0.7,
+      maxScale: 1,
+      step: 0.05,
     },
     layoutDefaults: {
       scale: 1,
@@ -131,6 +152,9 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
     label: 'Meta Feed 4:5',
     platform: 'Meta',
     placement: 'Facebook/Instagram Feed',
+    complianceMode: COMPLIANCE_MODE.ADS_SAFE_STRICT,
+    allowUseOriginal: false,
+    requireAudio: true,
     width: 1080,
     height: 1350,
     aspectRatio: '4:5',
@@ -151,7 +175,7 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
     maxDurationSec: 240 * 60,
     minBitrateBps: 1_200_000,
     reliabilityWarnBytes: 1 * 1024 * 1024 * 1024,
-    container: ['mp4', 'mov'],
+    container: ['mp4'],
     videoCodec: 'h264',
     audioCodec: 'aac',
     preferredVideoBitrate: '8M',
@@ -163,6 +187,11 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
       bottomPercent: 0.1,
       leftPercent: 0.04,
       rightPercent: 0.04,
+    },
+    layoutBounds: {
+      minScale: 0.7,
+      maxScale: 1,
+      step: 0.05,
     },
     layoutDefaults: {
       scale: 1,
@@ -177,6 +206,9 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
     label: 'Meta Square 1:1',
     platform: 'Meta',
     placement: 'Feed / Marketplace / Explore',
+    complianceMode: COMPLIANCE_MODE.ADS_SAFE_STRICT,
+    allowUseOriginal: false,
+    requireAudio: true,
     width: 1080,
     height: 1080,
     aspectRatio: '1:1',
@@ -196,7 +228,7 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
     maxDurationSec: 240 * 60,
     minBitrateBps: 1_200_000,
     reliabilityWarnBytes: 1 * 1024 * 1024 * 1024,
-    container: ['mp4', 'mov'],
+    container: ['mp4'],
     videoCodec: 'h264',
     audioCodec: 'aac',
     preferredVideoBitrate: '8M',
@@ -208,6 +240,11 @@ const BUILT_IN_PROFILE_SEEDS = Object.freeze([
       bottomPercent: 0.1,
       leftPercent: 0.04,
       rightPercent: 0.04,
+    },
+    layoutBounds: {
+      minScale: 0.7,
+      maxScale: 1,
+      step: 0.05,
     },
     layoutDefaults: {
       scale: 1,
@@ -252,6 +289,10 @@ export function getDefaultTargetIds(profiles = BUILT_IN_PROFILES) {
   return profiles.filter(profile => profile.enabled !== false).map(profile => profile.id);
 }
 
+export function isStrictComplianceMode(profile) {
+  return profile?.complianceMode === COMPLIANCE_MODE.ADS_SAFE_STRICT;
+}
+
 export function getSpecsPayload({ profiles = BUILT_IN_PROFILES } = {}) {
   const clientProfiles = profiles.map(profile => serializeProfileForClient(profile));
   return {
@@ -275,12 +316,16 @@ export function getSpecsPayload({ profiles = BUILT_IN_PROFILES } = {}) {
         'label',
         'platform',
         'placement',
+        'complianceMode',
+        'allowUseOriginal',
+        'requireAudio',
         'width',
         'height',
         'aspectRatio',
         'fps',
         'safeZoneGuide',
         'riskZones',
+        'layoutBounds',
         'layoutDefaults',
       ],
     },
@@ -300,6 +345,9 @@ export function normalizeProfile(input, { isBuiltIn = false } = {}) {
     label: String(input.label || 'Untitled Profile').trim(),
     platform: String(input.platform || 'Custom').trim(),
     placement: String(input.placement || 'Custom Placement').trim(),
+    complianceMode: normalizeComplianceMode(input.complianceMode, isBuiltIn),
+    allowUseOriginal: normalizeAllowUseOriginal(input.allowUseOriginal, isBuiltIn),
+    requireAudio: normalizeRequireAudio(input.requireAudio, isBuiltIn),
     width,
     height,
     aspectRatio,
@@ -328,6 +376,7 @@ export function normalizeProfile(input, { isBuiltIn = false } = {}) {
     outputLabel: String(input.outputLabel || slugify(`${input.platform || 'Custom'}_${aspectRatio}`)).trim(),
     safeZoneGuide: normalizeSafeGuide(input.safeZoneGuide),
     riskZones: normalizeRiskZoneInput(input.riskZones),
+    layoutBounds: normalizeLayoutBounds(input.layoutBounds, { isBuiltIn }),
     layoutDefaults: normalizeLayoutDefaults(input.layoutDefaults),
     enabled: input.enabled !== false,
     isBuiltIn,
@@ -423,6 +472,32 @@ function normalizeLayoutDefaults(layoutDefaults = {}) {
       ? layoutDefaults.backgroundMode
       : 'edge-extend',
     backgroundColor: String(layoutDefaults.backgroundColor || '#101514').trim(),
+  };
+}
+
+function normalizeComplianceMode(value, isBuiltIn = false) {
+  if (value === COMPLIANCE_MODE.ADS_SAFE_STRICT) return COMPLIANCE_MODE.ADS_SAFE_STRICT;
+  return isBuiltIn ? COMPLIANCE_MODE.ADS_SAFE_STRICT : COMPLIANCE_MODE.STANDARD;
+}
+
+function normalizeAllowUseOriginal(value, isBuiltIn = false) {
+  if (typeof value === 'boolean') return value;
+  return isBuiltIn ? false : true;
+}
+
+function normalizeRequireAudio(value, isBuiltIn = false) {
+  if (typeof value === 'boolean') return value;
+  return isBuiltIn;
+}
+
+function normalizeLayoutBounds(layoutBounds = {}, { isBuiltIn = false } = {}) {
+  const fallbackMaxScale = isBuiltIn ? 1 : DEFAULT_LAYOUT_BOUNDS.maxScale;
+  const minScale = clampNumber(layoutBounds.minScale ?? DEFAULT_LAYOUT_BOUNDS.minScale, DEFAULT_LAYOUT_BOUNDS.minScale, 0.1, DEFAULT_LAYOUT_BOUNDS.maxScale);
+  const maxScale = clampNumber(layoutBounds.maxScale ?? fallbackMaxScale, fallbackMaxScale, minScale, DEFAULT_LAYOUT_BOUNDS.maxScale);
+  return {
+    minScale,
+    maxScale,
+    step: clampNumber(layoutBounds.step ?? DEFAULT_LAYOUT_BOUNDS.step, DEFAULT_LAYOUT_BOUNDS.step, 0.01, 1),
   };
 }
 

@@ -32,6 +32,13 @@ export function roundEven(value, fallback = 2) {
   return Math.max(fallback, rounded);
 }
 
+function floorEven(value, fallback = 2) {
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  let rounded = Math.floor(value);
+  if (rounded % 2 !== 0) rounded -= 1;
+  return Math.max(fallback, rounded);
+}
+
 export function parseAspectRatio(aspectRatio, fallback = 1) {
   const [w, h] = String(aspectRatio || '').split(':').map(Number);
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return fallback;
@@ -116,8 +123,9 @@ export function normalizeRiskZones(target) {
 
 export function buildDefaultLayoutOverride(target) {
   const layoutDefaults = target?.layoutDefaults || {};
+  const bounds = resolveLayoutBounds(target);
   return {
-    scale: clamp(Number(layoutDefaults.scale ?? 1), DEFAULT_LAYOUT_BOUNDS.minScale, DEFAULT_LAYOUT_BOUNDS.maxScale),
+    scale: clamp(Number(layoutDefaults.scale ?? 1), bounds.minScale, bounds.maxScale),
     anchorX: clamp(Number(layoutDefaults.anchorX ?? 0.5), 0, 1),
     anchorY: clamp(Number(layoutDefaults.anchorY ?? 0.5), 0, 1),
     backgroundMode: layoutDefaults.backgroundMode || 'edge-extend',
@@ -127,8 +135,9 @@ export function buildDefaultLayoutOverride(target) {
 
 export function normalizeLayoutOverride(target, override = {}) {
   const fallback = buildDefaultLayoutOverride(target);
+  const bounds = resolveLayoutBounds(target);
   return {
-    scale: clamp(Number(override.scale ?? fallback.scale), DEFAULT_LAYOUT_BOUNDS.minScale, DEFAULT_LAYOUT_BOUNDS.maxScale),
+    scale: clamp(Number(override.scale ?? fallback.scale), bounds.minScale, bounds.maxScale),
     anchorX: clamp(Number(override.anchorX ?? fallback.anchorX), 0, 1),
     anchorY: clamp(Number(override.anchorY ?? fallback.anchorY), 0, 1),
     backgroundMode: override.backgroundMode || fallback.backgroundMode,
@@ -139,6 +148,7 @@ export function normalizeLayoutOverride(target, override = {}) {
 export function calculateLayout({ sourceWidth, sourceHeight, target, override = {} }) {
   const rawOverride = override || {};
   const safeRect = buildSafeRect(target);
+  const bounds = resolveLayoutBounds(target);
   const resolved = normalizeLayoutOverride(target, rawOverride);
   if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) {
     return {
@@ -163,17 +173,26 @@ export function calculateLayout({ sourceWidth, sourceHeight, target, override = 
 
   const baseScale = Math.min(safeRect.width / sourceWidth, safeRect.height / sourceHeight);
   const canvasFitScale = Math.min(target.width / sourceWidth, target.height / sourceHeight);
-  const maxScale = Math.max(1, canvasFitScale / baseScale);
-  const scaleMultiplier = clamp(resolved.scale, DEFAULT_LAYOUT_BOUNDS.minScale, maxScale);
+  const computedMaxScale = Math.max(1, canvasFitScale / baseScale);
+  const maxScale = clamp(Math.min(computedMaxScale, bounds.maxScale), bounds.minScale, Math.max(bounds.minScale, bounds.maxScale));
+  const scaleMultiplier = clamp(resolved.scale, bounds.minScale, maxScale);
   const actualScale = baseScale * scaleMultiplier;
-  const size = fitSourceIntoCanvas(sourceWidth, sourceHeight, actualScale, target.width, target.height);
+  const strictSafeBounds = getStrictSafeBounds(safeRect);
+  const fitMaxWidth = target?.complianceMode === 'ads-safe-strict'
+    ? Math.min(target.width, floorEven(strictSafeBounds.width))
+    : target.width;
+  const fitMaxHeight = target?.complianceMode === 'ads-safe-strict'
+    ? Math.min(target.height, floorEven(strictSafeBounds.height))
+    : target.height;
+  const size = fitSourceIntoCanvas(sourceWidth, sourceHeight, actualScale, fitMaxWidth, fitMaxHeight);
   const availableX = Math.max(0, target.width - size.width);
   const availableY = Math.max(0, target.height - size.height);
-  const defaultPosition = getSafeCenteredPosition(target, safeRect, size.width, size.height, availableX, availableY);
+  const positionBounds = getPositionBounds(target, safeRect, strictSafeBounds, size.width, size.height, availableX, availableY);
+  const defaultPosition = getSafeCenteredPosition(positionBounds);
   const anchorX = rawOverride.anchorX == null ? defaultPosition.anchorX : resolved.anchorX;
   const anchorY = rawOverride.anchorY == null ? defaultPosition.anchorY : resolved.anchorY;
-  const x = Math.round(availableX * anchorX);
-  const y = Math.round(availableY * anchorY);
+  const x = Math.round(positionBounds.minX + (positionBounds.maxX - positionBounds.minX) * anchorX);
+  const y = Math.round(positionBounds.minY + (positionBounds.maxY - positionBounds.minY) * anchorY);
   const foregroundRect = {
     x,
     y,
@@ -260,12 +279,52 @@ function fitSourceIntoCanvas(sourceWidth, sourceHeight, scale, maxWidth, maxHeig
   return { width: Math.max(2, width), height: Math.max(2, height) };
 }
 
-function getSafeCenteredPosition(target, safeRect, width, height, availableX, availableY) {
-  const centeredX = clamp(safeRect.x + (safeRect.width - width) / 2, 0, availableX);
-  const centeredY = clamp(safeRect.y + (safeRect.height - height) / 2, 0, availableY);
+function getSafeCenteredPosition(positionBounds) {
+  const centeredX = (positionBounds.minX + positionBounds.maxX) / 2;
+  const centeredY = (positionBounds.minY + positionBounds.maxY) / 2;
   return {
-    anchorX: availableX > 0 ? centeredX / availableX : 0.5,
-    anchorY: availableY > 0 ? centeredY / availableY : 0.5,
+    anchorX: positionBounds.maxX > positionBounds.minX ? (centeredX - positionBounds.minX) / (positionBounds.maxX - positionBounds.minX) : 0.5,
+    anchorY: positionBounds.maxY > positionBounds.minY ? (centeredY - positionBounds.minY) / (positionBounds.maxY - positionBounds.minY) : 0.5,
+  };
+}
+
+function getPositionBounds(target, safeRect, strictSafeBounds, width, height, availableX, availableY) {
+  if (target?.complianceMode !== 'ads-safe-strict') {
+    return {
+      minX: 0,
+      maxX: availableX,
+      minY: 0,
+      maxY: availableY,
+    };
+  }
+
+  const minX = clamp(strictSafeBounds.minX, 0, availableX);
+  const maxX = clamp(strictSafeBounds.maxX - width, minX, availableX);
+  const minY = clamp(strictSafeBounds.minY, 0, availableY);
+  const maxY = clamp(strictSafeBounds.maxY - height, minY, availableY);
+  return { minX, maxX, minY, maxY };
+}
+
+function resolveLayoutBounds(target) {
+  const source = target?.layoutBounds || {};
+  const minScale = clamp(Number(source.minScale ?? DEFAULT_LAYOUT_BOUNDS.minScale), 0.1, DEFAULT_LAYOUT_BOUNDS.maxScale);
+  const maxScale = clamp(Number(source.maxScale ?? DEFAULT_LAYOUT_BOUNDS.maxScale), minScale, DEFAULT_LAYOUT_BOUNDS.maxScale);
+  const step = clamp(Number(source.step ?? DEFAULT_LAYOUT_BOUNDS.step), 0.01, 1);
+  return { minScale, maxScale, step };
+}
+
+function getStrictSafeBounds(safeRect) {
+  const minX = Math.ceil(safeRect.x);
+  const maxX = Math.floor(safeRect.x + safeRect.width);
+  const minY = Math.ceil(safeRect.y);
+  const maxY = Math.floor(safeRect.y + safeRect.height);
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: Math.max(2, maxX - minX),
+    height: Math.max(2, maxY - minY),
   };
 }
 
